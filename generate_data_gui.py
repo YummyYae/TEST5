@@ -1,7 +1,6 @@
 import sys
 import os
 import numpy as np
-import scipy.io
 from openpyxl import Workbook
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QLineEdit, QPushButton, QTableWidget, 
@@ -13,6 +12,7 @@ class RandomDataGeneratorApp(QWidget):
         super().__init__()
         self.groups = []
         self.initUI()
+        self.init_default_groups()
 
     def initUI(self):
         self.setWindowTitle('随机数据生成器 (PyQt6版)')
@@ -46,7 +46,7 @@ class RandomDataGeneratorApp(QWidget):
         row2.addWidget(self.std_input)
         
         row2.addWidget(QLabel("数据量 (Count):"))
-        self.count_input = QLineEdit("20")
+        self.count_input = QLineEdit("50")
         row2.addWidget(self.count_input)
         input_layout.addLayout(row2)
 
@@ -67,7 +67,9 @@ class RandomDataGeneratorApp(QWidget):
         self.table.setHorizontalHeaderLabels(["名称", "平均数", "标准差", "数量"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers) # 禁止编辑
+        # 允许编辑，以便微调
+        # self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers) 
+        self.table.itemChanged.connect(self.on_item_changed)
         list_layout.addWidget(self.table)
 
         # 删除按钮
@@ -82,7 +84,7 @@ class RandomDataGeneratorApp(QWidget):
         action_layout = QVBoxLayout()
         action_frame.setLayout(action_layout)
         
-        self.generate_btn = QPushButton("生成 Excel 和 MAT 文件")
+        self.generate_btn = QPushButton("生成 Excel")
         self.generate_btn.setFixedHeight(40)
         self.generate_btn.clicked.connect(self.generate_files)
         action_layout.addWidget(self.generate_btn)
@@ -154,6 +156,55 @@ class RandomDataGeneratorApp(QWidget):
             self.table.removeRow(row)
             self.status_label.setText(f"已删除组: {name}")
 
+    def init_default_groups(self):
+        default_names = [
+            "教二北逆时针", "教二南逆时针", "教二二层走廊", "教二二层教室",
+            "教二四层走廊", "教二四层教室", "教三北逆时针", "教三南逆时针",
+            "教三二层走廊", "教三二层教室", "教三四层走廊", "教三四层教室"
+        ]
+        
+        self.table.blockSignals(True)
+        for name in default_names:
+            mean = 45.0
+            std = 3.0
+            count = 50
+            
+            group_data = {
+                'name': name,
+                'mean': mean,
+                'std': std,
+                'count': count
+            }
+            self.groups.append(group_data)
+            
+            row_idx = self.table.rowCount()
+            self.table.insertRow(row_idx)
+            self.table.setItem(row_idx, 0, QTableWidgetItem(name))
+            self.table.setItem(row_idx, 1, QTableWidgetItem(str(mean)))
+            self.table.setItem(row_idx, 2, QTableWidgetItem(str(std)))
+            self.table.setItem(row_idx, 3, QTableWidgetItem(str(count)))
+        self.table.blockSignals(False)
+
+    def on_item_changed(self, item):
+        row = item.row()
+        col = item.column()
+        
+        if row < 0 or row >= len(self.groups):
+            return
+            
+        try:
+            text = item.text()
+            if col == 0: # Name
+                self.groups[row]['name'] = text
+            elif col == 1: # Mean
+                self.groups[row]['mean'] = float(text)
+            elif col == 2: # Std
+                self.groups[row]['std'] = float(text)
+            elif col == 3: # Count
+                self.groups[row]['count'] = int(text)
+        except ValueError:
+            pass
+
     def generate_files(self):
         if not self.groups:
             QMessageBox.warning(self, "警告", "请先添加至少一组数据")
@@ -164,12 +215,50 @@ class RandomDataGeneratorApp(QWidget):
             
             # 生成数据
             for group in self.groups:
-                data = np.random.normal(loc=group['mean'], scale=group['std'], size=group['count'])
-                data = np.round(data, 2) # 保留两位小数
+                raw_data = np.random.normal(loc=group['mean'], scale=group['std'], size=group['count'])
+                
+                # === 数据映射处理 ===
+                # 复制一份数据进行处理，避免原地修改造成的逻辑混淆
+                processed_data = raw_data.copy()
+                
+                # 1. 小于 0 -> 映射到 20
+                processed_data[raw_data < 0] = 20
+                
+                # 2. 0 <= data < 20 -> 对数映射到 20-25
+                # 公式: y = 20 + 5 * ln(x + 1) / ln(21)
+                mask_0_20 = (raw_data >= 0) & (raw_data < 20)
+                if np.any(mask_0_20):
+                    processed_data[mask_0_20] = 20 + 5 * np.log(raw_data[mask_0_20] + 1) / np.log(21)
+                
+                # 3. 20 <= data < 30 -> 线性映射到 25-30
+                # 公式: y = 25 + (x - 20) * 0.5
+                mask_20_30 = (raw_data >= 20) & (raw_data < 30)
+                if np.any(mask_20_30):
+                    processed_data[mask_20_30] = 25 + (raw_data[mask_20_30] - 20) * 0.5
+                
+                # --- 上界处理 (对称逻辑，确保数据落在 20-60 之间) ---
+                # 假设核心区间为 [30, 50] 保持不变
+                
+                # 4. 50 <= data < 60 -> 线性映射到 50-55
+                # 公式: y = 50 + (x - 50) * 0.5
+                mask_50_60 = (raw_data >= 50) & (raw_data < 60)
+                if np.any(mask_50_60):
+                    processed_data[mask_50_60] = 50 + (raw_data[mask_50_60] - 50) * 0.5
+                    
+                # 5. 60 <= data < 80 -> 对数映射到 55-60
+                # 公式: y = 55 + 5 * ln(x - 60 + 1) / ln(21)
+                mask_60_80 = (raw_data >= 60) & (raw_data < 80)
+                if np.any(mask_60_80):
+                    processed_data[mask_60_80] = 55 + 5 * np.log(raw_data[mask_60_80] - 60 + 1) / np.log(21)
+                    
+                # 6. 大于等于 80 -> 映射到 60
+                processed_data[raw_data >= 80] = 60
+                
+                data = np.round(processed_data, 1) # 保留一位小数
                 all_data[group['name']] = data
 
             # === 保存到 Excel ===
-            excel_filename = 'multi_group_data.xlsx'
+            excel_filename = 'data.xlsx'
             # 获取当前脚本所在目录
             # 注意：如果是打包后的exe，路径获取方式可能不同，这里假设是脚本运行
             current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -179,46 +268,21 @@ class RandomDataGeneratorApp(QWidget):
             ws = wb.active
             ws.title = "Random Data"
             
-            current_row = 1
+            # 按列写入数据
+            col_idx = 1
             for name, data in all_data.items():
-                # 写入标题
-                ws.cell(row=current_row, column=1, value=name)
-                current_row += 1
+                # 写入标题 (第一行)
+                ws.cell(row=1, column=col_idx, value=name)
                 
-                # 写入数据 (每行10个)
-                col_idx = 1
-                for value in data:
-                    ws.cell(row=current_row, column=col_idx, value=value)
-                    col_idx += 1
-                    if col_idx > 10:
-                        col_idx = 1
-                        current_row += 1
+                # 写入数据 (从第二行开始)
+                for row_idx, value in enumerate(data, start=2):
+                    ws.cell(row=row_idx, column=col_idx, value=value)
                 
-                # 如果最后一行没填满，换行
-                if col_idx != 1:
-                    current_row += 1
-                
-                # 空一行
-                current_row += 1
+                col_idx += 1
                 
             wb.save(excel_path)
             
-            # === 保存到 MAT ===
-            mat_filename = 'multi_group_data.mat'
-            mat_path = os.path.join(current_dir, mat_filename)
-            
-            mat_data = {}
-            for name, data in all_data.items():
-                safe_name = name.replace(' ', '_')
-                # MATLAB 变量名必须以字母开头，且不能包含特殊字符
-                # 简单处理：如果首字符不是字母，加前缀
-                if not safe_name or not safe_name[0].isalpha():
-                    safe_name = "Group_" + safe_name
-                mat_data[safe_name] = data
-            
-            scipy.io.savemat(mat_path, mat_data)
-            
-            QMessageBox.information(self, "成功", f"文件已生成！\nExcel: {excel_filename}\nMAT: {mat_filename}")
+            QMessageBox.information(self, "成功", f"文件已生成！\nExcel: {excel_filename}")
             self.status_label.setText("生成完毕")
 
         except Exception as e:
