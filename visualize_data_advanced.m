@@ -1,302 +1,248 @@
 clc; clear; close all;
 
-% === 1. 数据读取与预处理 ===
+% === 1. 数据读取 ===
 filename = 'data.xlsx';
 if ~exist(filename, 'file')
     error('错误: 找不到文件 %s。', filename);
 end
 
-% 读取 Excel 文件，保留原始列名
+% 读取 Excel 文件
 opts = detectImportOptions(filename);
 opts.VariableNamingRule = 'preserve';
 data_table = readtable(filename, opts);
 
-% 定义预期的变量名映射 (根据用户描述)
-% 如果实际变量名不同，请在此处修改
-keys.j2_f2_corr = '教二二层走廊';
-keys.j2_f4_corr = '教二四层走廊';
-keys.j3_f2_corr = '教三二层走廊';
-keys.j3_f4_corr = '教三四层走廊';
+% 辅助函数：获取列数据
+get_col = @(name) data_table{:, name}(~isnan(data_table{:, name}));
 
-keys.j2_f2_class = '教二二层教室';
-keys.j2_f4_class = '教二四层教室';
-keys.j3_f2_class = '教三二层教室';
-keys.j3_f4_class = '教三四层教室';
+% --- 教二数据 ---
+j2_n = get_col('教二北逆时针');
+j2_s = get_col('教二南逆时针');
+j2_f2_corr = get_col('教二二层走廊');
+j2_f2_class = get_col('教二二层教室');
+j2_f4_corr = get_col('教二四层走廊');
+j2_f4_class = get_col('教二四层教室');
 
-keys.j2_n_ccw = '教二北逆时针';
-keys.j2_s_ccw = '教二南逆时针';
-keys.j3_n_ccw = '教三北逆时针';
-keys.j3_s_ccw = '教三南逆时针';
+% --- 教三数据 ---
+j3_n = get_col('教三北逆时针');
+j3_s = get_col('教三南逆时针');
+j3_f2_corr = get_col('教三二层走廊');
+j3_f2_class = get_col('教三二层教室');
+j3_f4_corr = get_col('教三四层走廊');
+j3_f4_class = get_col('教三四层教室');
 
-% 辅助函数：安全获取数据
-function data = get_data(tbl, key)
-    if ismember(key, tbl.Properties.VariableNames)
-        data = tbl{:, key};
-        if isnumeric(data)
-            data = data(~isnan(data));
-        end
-        data = double(data(:)); % 转为列向量
-    else
-        warning('未找到变量: %s，使用空数据代替。', key);
-        data = [];
-    end
-end
+% === 2. 数据整合 ===
 
-% 加载数据
-d.j2_f2_corr = get_data(data_table, keys.j2_f2_corr);
-d.j2_f4_corr = get_data(data_table, keys.j2_f4_corr);
-d.j3_f2_corr = get_data(data_table, keys.j3_f2_corr);
-d.j3_f4_corr = get_data(data_table, keys.j3_f4_corr);
+% 室内数据保持合并，代表整体"室内"环境
+data_b2_in = [j2_f2_corr; j2_f2_class; j2_f4_corr; j2_f4_class];
+data_b3_in = [j3_f2_corr; j3_f2_class; j3_f4_corr; j3_f4_class];
 
-d.j2_f2_class = get_data(data_table, keys.j2_f2_class);
-d.j2_f4_class = get_data(data_table, keys.j2_f4_class);
-d.j3_f2_class = get_data(data_table, keys.j3_f2_class);
-d.j3_f4_class = get_data(data_table, keys.j3_f4_class);
+% 选取"南面"作为室外参考基准
+ref_b2_out = j2_s;
+ref_b3_out = j3_s;
 
-d.j2_n_ccw = get_data(data_table, keys.j2_n_ccw);
-d.j2_s_ccw = get_data(data_table, keys.j2_s_ccw);
-d.j3_n_ccw = get_data(data_table, keys.j3_n_ccw);
-d.j3_s_ccw = get_data(data_table, keys.j3_s_ccw);
+% === 3. 颜色定义 (统一色系) ===
+% 使用 RGB 归一化值 [0-1]
+c_south = [0.8500, 0.3250, 0.0980]; % 深橙红 (代表南面/强信号/混凝土)
+c_north = [0.0000, 0.4470, 0.7410]; % 深蓝 (代表北面/弱信号/砖混)
+c_indoor = [0.2000, 0.2000, 0.2000]; % 深灰 (代表室内)
+c_fit_s = [0.6350, 0.0780, 0.1840]; % 暗红 (南面拟合线)
+c_fit_n = [0.0000, 0.2000, 0.4000]; % 暗蓝 (北面拟合线)
+c_corr = [0.4660, 0.6740, 0.1880];  % 绿色 (走廊)
+c_class = [0.9290, 0.6940, 0.1250]; % 黄色 (教室)
 
-% 计算均值和标准差
-fields = fieldnames(d);
-stats = struct();
-for i = 1:length(fields)
-    fn = fields{i};
-    dat = d.(fn);
-    if ~isempty(dat)
-        stats.(fn).mean = mean(dat, 'omitnan');
-        stats.(fn).std = std(dat, 'omitnan');
-    else
-        stats.(fn).mean = NaN;
-        stats.(fn).std = NaN;
-    end
-end
-
-% 通用绘图设置
-set(0, 'DefaultAxesFontSize', 10);
+% 设置通用绘图参数
+set(0, 'DefaultAxesFontSize', 12);
 set(0, 'DefaultLineLineWidth', 1.5);
+set(0, 'DefaultFigureColor', 'w'); % 背景设为白色
 
-% 定义高对比度且协调的色系 (白底突出)
-premium_colors = [
-    0.11, 0.39, 0.65; % 1. 宝石蓝 (Sapphire) - 深邃突出
-    0.84, 0.35, 0.34; % 2. 珊瑚红 (Coral) - 醒目对比
-    0.25, 0.55, 0.35; % 3. 森林绿 (Forest) - 自然协调
-    0.91, 0.65, 0.15; % 4. 琥珀黄 (Amber) - 明亮活力
-    0.53, 0.42, 0.66; % 5. 紫藤色 (Wisteria) - 优雅补充
-    0.20, 0.60, 0.60  % 6. 孔雀蓝 (Teal) - 清新点缀
-];
+%% --- 第一部分：教二（砖混结构）室外信号分析 (图1-4) ---
 
-%% === 第一幅图：信号强度趋势展示 ===
-figure('Name', '图1: 信号强度趋势展示', 'Color', 'w', 'Position', [100, 100, 1200, 800]);
+% 图1: 教二室外信号强度分布对比 (南 vs 北)
+figure(1);
+plot(j2_s, 'Color', c_south); hold on;
+plot(j2_n, 'Color', c_north);
+title('教二室外信号场强分布对比');
+xlabel('采样点');
+ylabel('信号强度 (dBm/Arbitrary)');
+legend('教二南 (South)', '教二北 (North)');
+grid on;
+hold off;
 
-% --- 子表1: 走廊位置数据 (楼层趋势) ---
-subplot(2, 2, 1);
-hold on; grid on; box on;
-floors = [2, 4];
-y_j2 = [stats.j2_f2_corr.mean, stats.j2_f4_corr.mean];
-err_j2 = [stats.j2_f2_corr.std, stats.j2_f4_corr.std];
-y_j3 = [stats.j3_f2_corr.mean, stats.j3_f4_corr.mean];
-err_j3 = [stats.j3_f2_corr.std, stats.j3_f4_corr.std];
+% 图2: 教二室外信号直方图对比
+figure(2);
+h1 = histogram(j2_s, 20, 'Normalization', 'pdf', 'FaceColor', c_south, 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+hold on;
+h2 = histogram(j2_n, 20, 'Normalization', 'pdf', 'FaceColor', c_north, 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+% 添加正态拟合曲线
+[mu_s, sigma_s] = normfit(j2_s);
+[mu_n, sigma_n] = normfit(j2_n);
+x_range = linspace(min([j2_s; j2_n]), max([j2_s; j2_n]), 100);
+plot(x_range, normpdf(x_range, mu_s, sigma_s), 'Color', c_fit_s, 'LineStyle', '--', 'LineWidth', 2);
+plot(x_range, normpdf(x_range, mu_n, sigma_n), 'Color', c_fit_n, 'LineStyle', '--', 'LineWidth', 2);
+title(['教二室外信号直方图对比 (南 \mu=', num2str(mu_s, '%.1f'), ', 北 \mu=', num2str(mu_n, '%.1f'), ')']);
+xlabel('信号强度');
+ylabel('概率密度');
+legend('教二南', '教二北', '南面拟合', '北面拟合');
+grid on;
+hold off;
 
-errorbar(floors, y_j2, err_j2, '-o', 'DisplayName', '教二', 'Color', premium_colors(1,:), 'MarkerFaceColor', premium_colors(1,:), 'LineWidth', 1.5);
-errorbar(floors, y_j3, err_j3, '-s', 'DisplayName', '教三', 'Color', premium_colors(5,:), 'MarkerFaceColor', premium_colors(5,:), 'LineWidth', 1.5);
-xticks(floors); xticklabels({'二层', '四层'});
-xlabel('楼层'); ylabel('平均信号强度');
-title('走廊位置信号强度随楼层变化');
-legend('show', 'Location', 'best');
+% 图3: 教二室外信号 CDF 对比
+figure(3);
+h_cdf1 = cdfplot(j2_s); hold on;
+h_cdf2 = cdfplot(j2_n);
+set(h_cdf1, 'Color', c_south, 'LineWidth', 2);
+set(h_cdf2, 'Color', c_north, 'LineWidth', 2);
+title('教二室外信号 CDF 对比');
+legend('教二南', '教二北', 'Location', 'NorthWest');
+xlabel('信号强度');
+grid on;
+hold off;
 
-% --- 子表2: 教室位置数据 (楼层趋势) ---
-subplot(2, 2, 2);
-hold on; grid on; box on;
-y_j2_c = [stats.j2_f2_class.mean, stats.j2_f4_class.mean];
-err_j2_c = [stats.j2_f2_class.std, stats.j2_f4_class.std];
-y_j3_c = [stats.j3_f2_class.mean, stats.j3_f4_class.mean];
-err_j3_c = [stats.j3_f2_class.std, stats.j3_f4_class.std];
+% 图4: 教二室外信号 Q-Q 图 (仅展示南面)
+figure(4);
+qqplot(j2_s);
+% 获取当前线条并修改颜色
+h_qq = get(gca, 'Children');
+% qqplot通常生成三个对象：数据点、参考线、上下限
+% 这里简单处理，尝试设置所有线条颜色
+set(h_qq, 'Color', c_south, 'MarkerEdgeColor', c_south); 
+title('教二南室外信号 Q-Q 图');
+grid on;
 
-errorbar(floors, y_j2_c, err_j2_c, '-o', 'DisplayName', '教二', 'Color', premium_colors(1,:), 'MarkerFaceColor', premium_colors(1,:), 'LineWidth', 1.5);
-errorbar(floors, y_j3_c, err_j3_c, '-s', 'DisplayName', '教三', 'Color', premium_colors(5,:), 'MarkerFaceColor', premium_colors(5,:), 'LineWidth', 1.5);
-xticks(floors); xticklabels({'二层', '四层'});
-xlabel('楼层'); ylabel('平均信号强度');
-title('教室位置信号强度随楼层变化');
-legend('show', 'Location', 'best');
+%% --- 第二部分：教三（混凝土结构）室外信号分析 (图5-8) ---
 
-% --- 子表3: 外围逆时针路径 (空间变化) ---
-subplot(2, 2, 3);
-hold on; grid on; box on;
-% 为了在同一张图显示，假设横轴是归一化的路径点或直接按顺序绘制
-plot(d.j2_n_ccw, 'DisplayName', '教二北', 'Color', premium_colors(1,:), 'LineWidth', 1.5);
-plot(d.j2_s_ccw, 'DisplayName', '教二南', 'Color', premium_colors(2,:), 'LineWidth', 1.5);
-plot(d.j3_n_ccw, 'DisplayName', '教三北', 'Color', premium_colors(5,:), 'LineWidth', 1.5);
-plot(d.j3_s_ccw, 'DisplayName', '教三南', 'Color', premium_colors(6,:), 'LineWidth', 1.5);
-xlabel('路径点顺序'); ylabel('信号强度');
-title('外围逆时针路径信号空间变化');
-legend('show', 'Location', 'best');
-
-% --- 子表4: 综合对比 (宏观序列) ---
-subplot(2, 2, 4);
-hold on; grid on; box on;
-% 定义所有分组的顺序
-all_groups_labels = {'教二走廊2F', '教二走廊4F', '教三走廊2F', '教三走廊4F', ...
-                     '教二教室2F', '教二教室4F', '教三教室2F', '教三教室4F', ...
-                     '教二北', '教二南', '教三北', '教三南'};
-all_groups_means = [stats.j2_f2_corr.mean, stats.j2_f4_corr.mean, stats.j3_f2_corr.mean, stats.j3_f4_corr.mean, ...
-                    stats.j2_f2_class.mean, stats.j2_f4_class.mean, stats.j3_f2_class.mean, stats.j3_f4_class.mean, ...
-                    stats.j2_n_ccw.mean, stats.j2_s_ccw.mean, stats.j3_n_ccw.mean, stats.j3_s_ccw.mean];
-plot(1:length(all_groups_means), all_groups_means, '-o', 'LineWidth', 2, 'Color', premium_colors(3,:), 'MarkerFaceColor', premium_colors(3,:));
-xticks(1:length(all_groups_means));
-xticklabels(all_groups_labels);
-xtickangle(45);
-ylabel('平均信号强度');
-title('所有测量环境信号水平宏观对比');
-
-
-%% === 第二幅图：不同场景直观对比 ===
-figure('Name', '图2: 场景直观对比', 'Color', 'w', 'Position', [150, 150, 1200, 800]);
-
-% --- 子表1: 教二建筑内部对比 ---
-subplot(2, 2, 1);
-hold on; grid on; box on;
-j2_labels = {'教二北逆', '教二南逆', '二层走廊', '四层走廊', '二层教室', '四层教室'};
-j2_vals = [stats.j2_n_ccw.mean, stats.j2_s_ccw.mean, stats.j2_f2_corr.mean, ...
-           stats.j2_f4_corr.mean, stats.j2_f2_class.mean, stats.j2_f4_class.mean];
-b1 = bar(j2_vals);
-b1.FaceColor = 'flat';
-b1.CData = premium_colors;
-xticks(1:length(j2_labels)); xticklabels(j2_labels); xtickangle(30);
+% 图5: 教三室外信号强度分布对比
+figure(5);
+plot(j3_s, 'Color', c_south); hold on;
+plot(j3_n, 'Color', c_north);
+title('教三室外信号场强分布对比');
+xlabel('采样点');
 ylabel('信号强度');
-title('教二建筑内部各位置对比');
+legend('教三南', '教三北');
+grid on;
+hold off;
 
-% --- 子表2: 教三建筑内部对比 ---
-subplot(2, 2, 2);
-hold on; grid on; box on;
-j3_labels = {'教三北逆', '教三南逆', '二层走廊', '四层走廊', '二层教室', '四层教室'};
-j3_vals = [stats.j3_n_ccw.mean, stats.j3_s_ccw.mean, stats.j3_f2_corr.mean, ...
-           stats.j3_f4_corr.mean, stats.j3_f2_class.mean, stats.j3_f4_class.mean];
-b2 = bar(j3_vals);
-b2.FaceColor = 'flat';
-b2.CData = premium_colors;
-xticks(1:length(j3_labels)); xticklabels(j3_labels); xtickangle(30);
-ylabel('信号强度');
-title('教三建筑内部各位置对比');
+% 图6: 教三室外信号直方图对比
+figure(6);
+histogram(j3_s, 20, 'Normalization', 'pdf', 'FaceColor', c_south, 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+hold on;
+histogram(j3_n, 20, 'Normalization', 'pdf', 'FaceColor', c_north, 'FaceAlpha', 0.5, 'EdgeColor', 'none');
+[mu3_s, sigma3_s] = normfit(j3_s);
+[mu3_n, sigma3_n] = normfit(j3_n);
+x_range3 = linspace(min([j3_s; j3_n]), max([j3_s; j3_n]), 100);
+plot(x_range3, normpdf(x_range3, mu3_s, sigma3_s), 'Color', c_fit_s, 'LineStyle', '--', 'LineWidth', 2);
+plot(x_range3, normpdf(x_range3, mu3_n, sigma3_n), 'Color', c_fit_n, 'LineStyle', '--', 'LineWidth', 2);
+title(['教三室外信号直方图对比 (南 \mu=', num2str(mu3_s, '%.1f'), ', 北 \mu=', num2str(mu3_n, '%.1f'), ')']);
+xlabel('信号强度');
+ylabel('概率密度');
+legend('教三南', '教三北', '南面拟合', '北面拟合');
+grid on;
+hold off;
 
-% --- 子表3: 跨建筑同类位置对比 ---
-subplot(2, 2, 3);
-hold on; grid on; box on;
-cross_labels = {'二层走廊', '四层走廊', '二层教室', '四层教室'};
-cross_vals = [stats.j2_f2_corr.mean, stats.j3_f2_corr.mean;
-              stats.j2_f4_corr.mean, stats.j3_f4_corr.mean;
-              stats.j2_f2_class.mean, stats.j3_f2_class.mean;
-              stats.j2_f4_class.mean, stats.j3_f4_class.mean];
-b3 = bar(cross_vals);
-% 设置分组柱状图颜色 (教二 vs 教三)
-b3(1).FaceColor = premium_colors(1,:);
-b3(2).FaceColor = premium_colors(5,:);
-legend({'教二', '教三'}, 'Location', 'best');
-xticks(1:length(cross_labels)); xticklabels(cross_labels);
-ylabel('信号强度');
-title('跨建筑同类位置信号对比');
+% 图7: 教三室外 CDF 对比
+figure(7);
+h_cdf3 = cdfplot(j3_s); hold on;
+h_cdf4 = cdfplot(j3_n);
+set(h_cdf3, 'Color', c_south, 'LineWidth', 2);
+set(h_cdf4, 'Color', c_north, 'LineWidth', 2);
+title('教三室外信号 CDF 对比');
+legend('教三南', '教三北', 'Location', 'NorthWest');
+xlabel('信号强度');
+grid on;
+hold off;
 
-% --- 子表4: 关键衍生指标 (损耗) ---
-subplot(2, 2, 4);
-hold on; grid on; box on;
-% 计算穿透损耗 (走廊 - 教室)
-loss_pen_j2_f2 = stats.j2_f2_corr.mean - stats.j2_f2_class.mean;
-loss_pen_j2_f4 = stats.j2_f4_corr.mean - stats.j2_f4_class.mean;
-loss_pen_j3_f2 = stats.j3_f2_corr.mean - stats.j3_f2_class.mean;
-loss_pen_j3_f4 = stats.j3_f4_corr.mean - stats.j3_f4_class.mean;
+% 图8: 教三室外 Q-Q 图 (仅展示南面)
+figure(8);
+qqplot(j3_s);
+h_qq2 = get(gca, 'Children');
+set(h_qq2, 'Color', c_south, 'MarkerEdgeColor', c_south);
+title('教三南室外信号 Q-Q 图');
+grid on;
 
-% 计算路径损耗差值 (外围 - 室内平均)
-% 这里简单取外围均值 - 室内所有均值
-mean_outer_j2 = mean([stats.j2_n_ccw.mean, stats.j2_s_ccw.mean]);
-mean_inner_j2 = mean([stats.j2_f2_corr.mean, stats.j2_f4_corr.mean, stats.j2_f2_class.mean, stats.j2_f4_class.mean]);
-diff_path_j2 = mean_outer_j2 - mean_inner_j2;
+%% --- 第三部分：室内外对比分析 (图9-10) ---
 
-mean_outer_j3 = mean([stats.j3_n_ccw.mean, stats.j3_s_ccw.mean]);
-mean_inner_j3 = mean([stats.j3_f2_corr.mean, stats.j3_f4_corr.mean, stats.j3_f2_class.mean, stats.j3_f4_class.mean]);
-diff_path_j3 = mean_outer_j3 - mean_inner_j3;
+% 图9: 教二室内外 CDF 对比 (室外取南面)
+figure(9);
+h_out_b2 = cdfplot(j2_s);
+hold on;
+h_in_b2 = cdfplot(data_b2_in);
+set(h_out_b2, 'LineWidth', 2, 'Color', c_south);
+set(h_in_b2, 'LineWidth', 2, 'Color', c_indoor, 'LineStyle', '--');
+title('教二（砖混）室内外信号 CDF 对比');
+legend('室外 (南)', '室内 (整体)', 'Location', 'NorthWest');
+xlabel('信号强度');
+grid on;
+hold off;
 
-loss_labels = {'J2 F2穿透', 'J2 F4穿透', 'J3 F2穿透', 'J3 F4穿透', 'J2 内外差', 'J3 内外差'};
-loss_vals = [loss_pen_j2_f2, loss_pen_j2_f4, loss_pen_j3_f2, loss_pen_j3_f4, diff_path_j2, diff_path_j3];
+% 图10: 教三室内外 CDF 对比 (室外取南面)
+figure(10);
+h_out_b3 = cdfplot(j3_s);
+hold on;
+h_in_b3 = cdfplot(data_b3_in);
+set(h_out_b3, 'LineWidth', 2, 'Color', c_south);
+set(h_in_b3, 'LineWidth', 2, 'Color', c_indoor, 'LineStyle', '--');
+title('教三（混凝土）室内外信号 CDF 对比');
+legend('室外 (南)', '室内 (整体)', 'Location', 'NorthWest');
+xlabel('信号强度');
+grid on;
+hold off;
 
-b4 = bar(loss_vals);
-b4.FaceColor = 'flat';
-b4.CData = premium_colors;
-xticks(1:length(loss_labels)); xticklabels(loss_labels); xtickangle(30);
-ylabel('损耗/差值 (dB)');
-title('关键衍生指标计算结果');
+%% --- 第四部分：穿透损耗分析 (图11-12) ---
+
+% 计算所有损耗 (基准：各楼南面均值)
+mean_ref_b2 = mean(j2_s);
+loss_j2_f2_corr = mean_ref_b2 - mean(j2_f2_corr);
+loss_j2_f2_class = mean_ref_b2 - mean(j2_f2_class);
+loss_j2_f4_corr = mean_ref_b2 - mean(j2_f4_corr);
+loss_j2_f4_class = mean_ref_b2 - mean(j2_f4_class);
+
+mean_ref_b3 = mean(j3_s);
+loss_j3_f2_corr = mean_ref_b3 - mean(j3_f2_corr);
+loss_j3_f2_class = mean_ref_b3 - mean(j3_f2_class);
+loss_j3_f4_corr = mean_ref_b3 - mean(j3_f4_corr);
+loss_j3_f4_class = mean_ref_b3 - mean(j3_f4_class);
+
+% 图11: 不同建筑材料穿透损耗对比 (砖混 vs 混凝土)
+figure(11);
+locations = {'二层走廊', '二层教室', '四层走廊', '四层教室'};
+y_j2 = [loss_j2_f2_corr, loss_j2_f2_class, loss_j2_f4_corr, loss_j2_f4_class];
+y_j3 = [loss_j3_f2_corr, loss_j3_f2_class, loss_j3_f4_corr, loss_j3_f4_class];
+data_fig11 = [y_j2; y_j3]'; 
+
+b11 = bar(data_fig11);
+b11(1).FaceColor = c_north; % 砖石 - 蓝色系
+b11(2).FaceColor = c_south; % 混凝土 - 红色系
+set(gca, 'XTickLabel', locations);
+title('不同建筑材料穿透损耗对比');
+ylabel('损耗 (dB)');
+legend('砖混结构 (教二)', '混凝土结构 (教三)', 'Location', 'NorthWest');
+grid on;
+% 显示数值
+xtips1 = b11(1).XEndPoints; ytips1 = b11(1).YEndPoints; labels1 = string(round(b11(1).YData, 1));
+text(xtips1, ytips1, labels1, 'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom');
+xtips2 = b11(2).XEndPoints; ytips2 = b11(2).YEndPoints; labels2 = string(round(b11(2).YData, 1));
+text(xtips2, ytips2, labels2, 'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom');
 
 
-%% === 第三幅图：数据统计分布特性 ===
-figure('Name', '图3: 统计分布特性分析', 'Color', 'w', 'Position', [200, 200, 1200, 800]);
+% 图12: 室内不同深度（走廊vs教室）损耗对比
+figure(12);
+groups = {'教二 2F', '教二 4F', '教三 2F', '教三 4F'};
+y_corr = [loss_j2_f2_corr, loss_j2_f4_corr, loss_j3_f2_corr, loss_j3_f4_corr];
+y_class = [loss_j2_f2_class, loss_j2_f4_class, loss_j3_f2_class, loss_j3_f4_class];
+data_fig12 = [y_corr; y_class]';
 
-% 聚合数据用于统计 (例如所有教室数据)
-agg_data = [d.j2_f2_class; d.j2_f4_class; d.j3_f2_class; d.j3_f4_class];
-agg_data(isnan(agg_data)) = [];
-agg_mean = mean(agg_data);
-agg_std = std(agg_data);
+b12 = bar(data_fig12);
+b12(1).FaceColor = c_corr;  % 走廊 - 绿色
+b12(2).FaceColor = c_class; % 教室 - 黄色
+set(gca, 'XTickLabel', groups);
+title('室内不同深度损耗对比 (走廊 vs 教室)');
+ylabel('损耗 (dB)');
+legend('走廊 (一层墙)', '教室 (多层墙/室中室)', 'Location', 'NorthWest');
+grid on;
+% 显示数值
+xtips3 = b12(1).XEndPoints; ytips3 = b12(1).YEndPoints; labels3 = string(round(b12(1).YData, 1));
+text(xtips3, ytips3, labels3, 'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom');
+xtips4 = b12(2).XEndPoints; ytips4 = b12(2).YEndPoints; labels4 = string(round(b12(2).YData, 1));
+text(xtips4, ytips4, labels4, 'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom');
 
-% --- 子表1: 概率密度分布直方图与拟合 ---
-subplot(2, 2, 1);
-hold on; grid on; box on;
-histogram(agg_data, 'Normalization', 'pdf', 'DisplayName', '实测分布', 'FaceColor', premium_colors(2,:), 'EdgeColor', 'none');
-x_range = linspace(min(agg_data), max(agg_data), 100);
-% 手动实现 normpdf: (1/(sigma*sqrt(2*pi))) * exp(-0.5*((x-mu)/sigma)^2)
-y_norm = (1 / (agg_std * sqrt(2 * pi))) * exp(-0.5 * ((x_range - agg_mean) / agg_std).^2);
-plot(x_range, y_norm, '-', 'Color', premium_colors(5,:), 'LineWidth', 2, 'DisplayName', '正态拟合');
-xline(agg_mean, '--', 'Color', [0.2 0.2 0.2], 'LineWidth', 1.5, 'DisplayName', '均值');
-title('聚合数据集(教室)概率密度分布');
-xlabel('信号强度'); ylabel('概率密度');
-legend('show');
-
-% --- 子表2: 累积分布函数图 (CDF) ---
-subplot(2, 2, 2);
-hold on; grid on; box on;
-% 手动实现 cdfplot (经验累积分布)
-sorted_agg = sort(agg_data);
-n_agg = length(agg_data);
-y_emp = (1:n_agg) / n_agg;
-plot(sorted_agg, y_emp, 'Color', premium_colors(1,:), 'LineWidth', 2, 'DisplayName', '实测CDF');
-
-% 手动实现 normcdf: 0.5 * (1 + erf((x-mu)/(sigma*sqrt(2))))
-y_cdf = 0.5 * (1 + erf((x_range - agg_mean) / (agg_std * sqrt(2))));
-plot(x_range, y_cdf, '--', 'Color', premium_colors(5,:), 'LineWidth', 2, 'DisplayName', '理论正态CDF');
-title('累积分布函数对比');
-xlabel('信号强度'); ylabel('累积概率');
-legend('show', 'Location', 'best');
-
-% --- 子表3: Q-Q 图 (以教二二层走廊为例) ---
-subplot(2, 2, 3);
-hold on; grid on; box on;
-test_data = d.j2_f2_corr;
-test_data(isnan(test_data)) = [];
-% 手动实现 Q-Q 图
-sorted_test = sort(test_data);
-n_test = length(test_data);
-% 计算百分位
-p_vals = ((1:n_test) - 0.5) / n_test;
-% 标准正态分布的分位数 (使用 erfinv)
-theoretical_q = sqrt(2) * erfinv(2 * p_vals - 1);
-plot(theoretical_q, sorted_test, '+', 'Color', premium_colors(1,:), 'DisplayName', '数据点');
-% 添加参考线 (y = sigma*x + mu)
-ref_x = linspace(min(theoretical_q), max(theoretical_q), 100);
-ref_y = std(test_data) * ref_x + mean(test_data);
-plot(ref_x, ref_y, '--', 'Color', premium_colors(5,:), 'LineWidth', 1.5, 'DisplayName', '参考线');
-
-title('Q-Q 图 (教二二层走廊)');
-xlabel('标准正态分位数'); ylabel('输入数据分位数');
-legend('show', 'Location', 'best');
-
-% --- 子表4: 时间/空间序列折线图 (外围路径) ---
-subplot(2, 2, 4);
-hold on; grid on; box on;
-% 绘制几条路径的原始波动
-plot(d.j2_n_ccw, 'Color', premium_colors(1,:), 'DisplayName', '教二北');
-yline(stats.j2_n_ccw.mean, '--', 'Color', premium_colors(1,:), 'HandleVisibility', 'off');
-
-plot(d.j2_s_ccw, 'Color', premium_colors(2,:), 'DisplayName', '教二南');
-yline(stats.j2_s_ccw.mean, '--', 'Color', premium_colors(2,:), 'HandleVisibility', 'off');
-
-xlabel('测量点顺序'); ylabel('信号强度');
-title('外围路径信号序列波动');
-legend('show');
+disp('所有12幅图像已生成完毕。');
